@@ -12,6 +12,7 @@ import torch.optim as optim
 import torch.backends.cudnn as cudnn
 import torch.nn.init as init
 import torch.utils.data as data
+from torchsummary import summary
 import numpy as np
 import argparse
 
@@ -103,9 +104,11 @@ def train():
         print('Resuming training, loading {}...'.format(args.resume))
         ssd_net.load_weights(args.resume)
     else:
+        # OK if we have too many layers on input
         vgg_weights = torch.load(args.save_folder + args.basenet)
         print('Loading base network...')
-        ssd_net.vgg.load_state_dict(vgg_weights)
+        ssd_net.vgg.load_state_dict(vgg_weights, strict=False)
+        ssd_net.extras.load_state_dict(vgg_weights, strict=False)
 
     if args.cuda:
         net = net.cuda()
@@ -116,6 +119,9 @@ def train():
         ssd_net.extras.apply(weights_init)
         ssd_net.loc.apply(weights_init)
         ssd_net.conf.apply(weights_init)
+
+    print('Loaded model = ')
+    summary(ssd_net, (3, cfg['min_dim'], cfg['min_dim']))
 
     optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
                           weight_decay=args.weight_decay)
