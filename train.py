@@ -15,7 +15,7 @@ import torch.utils.data as data
 from torchsummary import summary
 import numpy as np
 import argparse
-
+import collections
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
@@ -28,12 +28,12 @@ parser.add_argument('--dataset', default='VOC', choices=['VOC', 'COCO'],
                     type=str, help='VOC or COCO')
 parser.add_argument('--dataset_root', default=VOC_ROOT,
                     help='Dataset root directory path')
-parser.add_argument('--basenet', default='vgg16_reducedfc.pth',
-                    help='Pretrained base model')
 parser.add_argument('--batch_size', default=32, type=int,
                     help='Batch size for training')
-parser.add_argument('--resume', default=None, type=str,
-                    help='Checkpoint state_dict file to resume training from')
+parser.add_argument('--weightsFile', default=None, type=str,
+                    help='File to load weights from.')
+parser.add_argument('--loadMode', choices=['resume', 'finetune', 'basenet', 'none'], default='basenet', type=str,
+                    help='How to interpret weightsFile.\n\tfinetune: Finetune the given net, so all aspects might match, except for latter layers.\n\tbasenet: Pretrained base model for features.\n\tresume: weights must match exactly.')
 parser.add_argument('--start_iter', default=0, type=int,
                     help='Resume training at this iter')
 parser.add_argument('--num_workers', default=4, type=int,
@@ -52,6 +52,8 @@ parser.add_argument('--visdom', default=False, type=str2bool,
                     help='Use visdom for loss visualization')
 parser.add_argument('--save_folder', default='weights/',
                     help='Directory for saving checkpoint models')
+parser.add_argument('--loadExtras', action='store_true', help='If true, load non-feature layers')
+
 args = parser.parse_args()
 
 
@@ -96,29 +98,43 @@ def train():
     ssd_net = build_ssd('train', cfg['min_dim'], cfg['num_classes'])
     net = ssd_net
 
-    if args.cuda:
-        net = torch.nn.DataParallel(ssd_net)
-        cudnn.benchmark = True
+    # Here is where we load the weights.  It can get very confusing.
+    # TO help, print out keys of state dict first.
+    print('Created neural net with state dict = \n{}'.format(ssd_net.state_dict().keys()))
 
-    if args.resume:
-        print('Resuming training, loading {}...'.format(args.resume))
-        ssd_net.load_weights(args.resume)
-    else:
-        # OK if we have too many layers on input
-        vgg_weights = torch.load(args.save_folder + args.basenet)
-        print('Loading base network...')
-        ssd_net.vgg.load_state_dict(vgg_weights, strict=False)
-        ssd_net.extras.load_state_dict(vgg_weights, strict=False)
-
-    if args.cuda:
-        net = net.cuda()
-
-    if not args.resume:
+    if args.weightsFile is None or args.loadMode == 'none':
         print('Initializing weights...')
         # initialize newly added layers' weights with xavier method
         ssd_net.extras.apply(weights_init)
         ssd_net.loc.apply(weights_init)
         ssd_net.conf.apply(weights_init)
+    else:
+        wtsLoaded = torch.load(args.weightsFile)
+        print('Loading file with State Dict Keys = \n{}'.format(wtsLoaded.keys()))
+
+        if args.loadMode == 'resume':
+            print('Resuming training, loading {}...'.format(args.weightsFile))
+            ssd_net.load_weights(args.weightsFile)
+        elif args.loadMode == 'basenet':
+            ssd_net.vgg.load_state_dict(wtsLoaded)
+        elif args.loadMode == 'finetune':
+            # OK if we have too many layers on input
+            wtsFiltered = collections.OrderedDict()
+            for k, v in wtsLoaded.items():
+                if k.startswith('vgg.') or k.startswith('extras.'):
+                    wtsFiltered[k] = v
+            print('Fine-tuning model, just loading these weights:\n{}'.format(wtsFiltered.keys()))
+            ssd_net.load_state_dict(wtsFiltered, strict=False)
+        else:
+            print('Invalid load mode {}'.format(args.loadMode))
+            sys.exit(1)
+
+    if args.cuda:
+        net = torch.nn.DataParallel(ssd_net)
+        cudnn.benchmark = True
+
+    if args.cuda:
+        net = net.cuda()
 
     print('Loaded model = ')
     summary(ssd_net, (3, cfg['min_dim'], cfg['min_dim']))
