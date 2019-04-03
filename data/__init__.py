@@ -5,6 +5,7 @@ from .config import *
 import torch
 import cv2
 import numpy as np
+from .general import GeneralDetection
 
 def detection_collate(batch):
     """Custom collate fn for dealing with batches of images that have a different

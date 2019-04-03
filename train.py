@@ -16,6 +16,7 @@ from torchsummary import summary
 import numpy as np
 import argparse
 import collections
+import json
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
@@ -24,8 +25,8 @@ def str2bool(v):
 parser = argparse.ArgumentParser(
     description='Single Shot MultiBox Detector Training With Pytorch')
 #train_set = parser.add_mutually_exclusive_group()
-parser.add_argument('--dataset', default='VOC', choices=['VOC', 'COCO'],
-                    type=str, help='VOC or COCO')
+parser.add_argument('--dataset', default='VOC', choices=['VOC', 'COCO', 'general'],
+                    type=str, help='VOC or COCO or general')
 parser.add_argument('--dataset_root', default=VOC_ROOT,
                     help='Dataset root directory path')
 parser.add_argument('--batch_size', default=32, type=int,
@@ -54,6 +55,11 @@ parser.add_argument('--save_folder', default='weights/',
                     help='Directory for saving checkpoint models')
 parser.add_argument('--loadExtras', action='store_true', help='If true, load non-feature layers')
 
+parser.add_argument('--configFile', type=str, default=None, help='json config file for data set')
+parser.add_argument('--classListFile', type=str, default=None, help='file')
+parser.add_argument('--gtFileCSV', type=str, default=None, help='file')
+parser.add_argument('--dataName', type=str, default=None, help='file')
+
 args = parser.parse_args()
 
 
@@ -70,6 +76,11 @@ else:
 if not os.path.exists(args.save_folder):
     os.mkdir(args.save_folder)
 
+
+def readConfigFile(fn):
+    with open(fn, 'r') as f:
+        cfg = json.load(f)
+    return cfg
 
 def train():
     if args.dataset == 'COCO':
@@ -90,6 +101,17 @@ def train():
         dataset = VOCDetection(root=args.dataset_root,
                                transform=SSDAugmentation(cfg['min_dim'],
                                                          MEANS))
+    elif args.dataset == 'general':
+        if args.dataset_root == COCO_ROOT:
+            parser.error('Must specify dataset if specifying dataset "general"')
+        cfg = readConfigFile(args.configFile)
+        print('Using general data set with config = \n{}'.format(cfg))
+        dataset = GeneralDetection(args.dataset_root,
+                                   args.classListFile,
+                                   args.gtFileCSV,
+                                   transform=SSDAugmentation(cfg['min_dim'],
+                                                             cfg['means']),
+                                   datasetName=args.dataName)
 
     if args.visdom:
         import visdom
