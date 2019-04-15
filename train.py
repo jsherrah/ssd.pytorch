@@ -44,12 +44,18 @@ parser.add_argument('--visdom', default=False, type=str2bool, help='Use visdom f
 parser.add_argument('--save_folder', default='weights/', help='Directory for saving checkpoint models')
 parser.add_argument('--loadExtras', action='store_true', help='If true, load non-feature layers')
 
+parser.add_argument('--displayIters', default=10, type=int, help='Display every this many iterations')
+parser.add_argument('--saveIters', default=1000, type=int, help='Save every this many iterations')
+parser.add_argument('--testIters', default=50, type=int, help='Test every this many iterations')
+
 parser.add_argument('--configFile', type=str, default=None, help='json config file for data set')
 parser.add_argument('--classListFile', type=str, default=None, help='file')
 parser.add_argument('--gtFileCSV', type=str, default=None, help='file')
 parser.add_argument('--dataName', type=str, default=None, help='file')
-parser.add_argument('--displayIters', default=10, type=int, help='Display every this many iterations')
-parser.add_argument('--saveIters', default=1000, type=int, help='Save every this many iterations')
+
+parser.add_argument('--dataset_rootTest', default=None, help='Dataset root directory path')
+parser.add_argument('--gtFileCSVTest', type=str, default=None, help='file')
+parser.add_argument('--nbBatchesTest', default=10, type=int, help='Number of batches to run each test iteration')
 
 args = parser.parse_args()
 
@@ -103,6 +109,8 @@ def showDataSet(trainLoader, means):
 def train():
     waysAndMeans = None
 
+    datasetTest = None
+
     if args.dataset == 'COCO':
         if args.dataset_root == VOC_ROOT:
             if not os.path.exists(COCO_ROOT):
@@ -143,6 +151,25 @@ def train():
                                    args.gtFileCSV,
                                    transform=transformer,
                                    datasetName=args.dataName)
+
+        if args.dataset_rootTest is not None and args.gtFileCSVTest is not None:
+            print('Loading test set')
+            transformerTest = SSDAugmentation(cfg['min_dim'], waysAndMeans, [
+                ConvertFromInts(),
+                #ToAbsoluteCoords(),
+                #PhotometricDistort(),
+                #Expand(self.mean),
+                #RandomSampleCrop(),
+                #RandomMirror(),
+                #ToPercentCoords(),
+                #Resize(self.size),
+                SubtractMeans(waysAndMeans)
+            ])
+            datasetTest = GeneralDetection( args.dataset_rootTest,
+                                            args.classListFile,
+                                            args.gtFileCSVTest,
+                                            transform=transformerTest,
+                                            datasetName=args.dataName )
 
     imgSz = cfg['min_dim']
 
@@ -226,20 +253,25 @@ def train():
                                   shuffle=True, collate_fn=detection_collate,
                                   pin_memory=True)
 
+    if datasetTest is None:
+        data_loaderTest = None
+        iter_plotTest = None
+    else:
+        data_loaderTest = data.DataLoader(datasetTest, args.batch_size,
+                                          num_workers=args.num_workers,
+                                          shuffle=True, collate_fn=detection_collate,
+                                          pin_memory=True)
+        iter_plotTest = create_vis_plot(viz, 'Iteration', 'Loss',  'SSD.PyTorch on ' + dataset.name + ' - test', vis_legend)
+        epoch_plotTest = create_vis_plot(viz, 'Epoch', 'Loss', 'SSD.PyTorch on ' + dataset.name + ' - test', vis_legend)
+
     plt.ion()
     showDataSet(data_loader, means=waysAndMeans)
     #plt.waitforbuttonpress()
 
     # create batch iterator
     batch_iterator = iter(data_loader)
+    batch_iterator_test = None
     for iteration in range(args.start_iter, cfg['max_iter']):
-        if args.visdom and iteration != 0 and (iteration % epoch_size == 0):
-            update_vis_plot(viz, epoch, loc_loss, conf_loss, epoch_plot, None,
-                            'append', epoch_size)
-            # reset epoch loss counters
-            loc_loss = 0
-            conf_loss = 0
-            epoch += 1
 
         if iteration in cfg['lr_steps']:
             step_index += 1
@@ -249,10 +281,30 @@ def train():
         try:
             images, targets = next(batch_iterator)
         except StopIteration as e:
-            # no more batches left, start again
-            print('Restarting batch iterator')
+            # End of an epoch:
+            #   no more batches left, start again
             batch_iterator = iter(data_loader)
             images, targets = next(batch_iterator)
+
+            # Evaluate on whole test set.
+            print('End of epoch %3d ||' % epoch, end=' ')
+            if data_loaderTest is not None:
+                _, lossTest_l, lossTest_c = validate(
+                    data_loaderTest, net, criterion, args.cuda, None, epoch_size, doPrint=True
+                )
+                net.train()
+            print('')
+
+            if args.visdom:
+                loc_loss /= float(epoch_size)
+                conf_loss /= float(epoch_size)
+                update_vis_plot(viz, epoch, loc_loss, conf_loss, epoch_plot, 'append')
+                update_vis_plot(viz, epoch, lossTest_l, lossTest_c, epoch_plotTest, 'append')
+
+            # reset epoch loss counters
+            loc_loss = 0
+            conf_loss = 0
+            epoch += 1
 
         if args.cuda:
             images = Variable(images.cuda())
@@ -272,16 +324,27 @@ def train():
         loss.backward()
         optimizer.step()
         t1 = time.time()
-        loc_loss += loss_l.item() #data[0]
-        conf_loss += loss_c.item() #data[0]
+        loc_loss += loss_l.item()
+        conf_loss += loss_c.item()
+
+        if iteration % args.displayIters == 0:
+            print('iter ' + repr(iteration) + ' || Loss: %.4f ||' % (loss.item()), end=' ')
+
+            if args.visdom:
+                update_vis_plot(viz, iteration, loss_l.item(), loss_c.item(), iter_plot, 'append')
+
+        if data_loaderTest is not None and args.nbBatchesTest > 0 and iteration % args.testIters == 0:
+            # Test
+            batch_iterator_test, lossTest_l, lossTest_c = validate(
+                data_loaderTest, net, criterion, args.cuda, batch_iterator_test, args.nbBatchesTest, doPrint=True
+            )
+            net.train()
+
+            if args.visdom:
+                update_vis_plot(viz, iteration, lossTest_l, lossTest_c, iter_plotTest, 'append')
 
         if iteration % args.displayIters == 0:
             print('timer: %.4f sec.' % (t1 - t0))
-            print('iter ' + repr(iteration) + ' || Loss: %.4f ||' % (loss.item()), end=' ') # (loss.data[0]), end=' ')
-
-            if args.visdom:
-                update_vis_plot(viz, iteration, loss_l.item(), loss_c.item(), # loss_l.data[0], loss_c.data[0],
-                                iter_plot, epoch_plot, 'append')
 
         if iteration != 0 and iteration % args.saveIters == 0:
             print('Saving state, iter:', iteration)
@@ -329,22 +392,56 @@ def create_vis_plot(viz, _xlabel, _ylabel, _title, _legend):
     )
 
 
-def update_vis_plot(viz, iteration, loc, conf, window1, window2, update_type,
-                    epoch_size=1):
+def update_vis_plot(viz, iteration, loc, conf, window1, update_type):
     viz.line(
         X=torch.ones((1, 3)).cpu() * iteration,
-        Y=torch.Tensor([loc, conf, loc + conf]).unsqueeze(0).cpu() / epoch_size,
+        Y=torch.Tensor([loc, conf, loc + conf]).unsqueeze(0).cpu(),
         win=window1,
         update=update_type
     )
-    # initialize epoch plot on first iteration
-    if iteration == 0 and window2 is not None:
-        viz.line(
-            X=torch.zeros((1, 3)).cpu(),
-            Y=torch.Tensor([loc, conf, loc + conf]).unsqueeze(0).cpu(),
-            win=window2,
-            update=True
-        )
+
+################################3
+def validate(data_loader, net, criterion, cuda, batch_iterator, nbBatches, doPrint):
+    if batch_iterator is None:
+        batch_iterator = iter(data_loader)
+
+    net.eval()
+    loss_l_tot, loss_c_tot = 0, 0
+    count = 0
+
+    with torch.no_grad():
+        for iteration in range(nbBatches):
+            # load train data
+            try:
+                images, targets = next(batch_iterator)
+            except StopIteration as e:
+                # no more batches left, start again
+                print('Restarting validation batch iterator')
+                batch_iterator = iter(data_loader)
+                images, targets = next(batch_iterator)
+
+            if cuda:
+                images = Variable(images.cuda())
+                targets = [Variable(ann.cuda()) for ann in targets]
+            else:
+                images = Variable(images)
+                targets = [Variable(ann) for ann in targets]
+
+            out = net(images)
+            loss_l, loss_c = criterion(out, targets)
+            loss_l_tot += loss_l.item()
+            loss_c_tot += loss_c.item()
+            count += 1
+
+    loss_l_tot /= float(count)
+    loss_c_tot /= float(count)
+    loss = loss_l_tot + loss_c_tot
+
+    if doPrint:
+        # This adds to existing line
+        print(' Test Loss: %.4f ||' % (loss), end=' ')
+
+    return batch_iterator, loss_l_tot, loss_c_tot
 
 
 if __name__ == '__main__':
