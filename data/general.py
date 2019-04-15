@@ -7,6 +7,7 @@ import torchvision.transforms as transforms
 import cv2
 import numpy as np
 import pandas as pd
+import aimltools as aiml
 import aimltools.io
 from collections import defaultdict
 
@@ -31,9 +32,9 @@ class GeneralDetection(data.Dataset):
         self.transform = transform
         self.name = datasetName
         # We need consistent class labels.  This is determined by the ordering in the class list file.
-        self.classNames = readClassListFile(os.path.join(self.root, classListFile))
+        self.classes = readClassListFile(os.path.join(self.root, classListFile))
         # Go from name to int index.
-        self.classNameToIndex = dict(zip(self.classNames, range(len(self.classNames))))
+        self.classNameToIndex = dict(zip(self.classes, range(len(self.classes))))
         # Now read the actual data.
         self.df = pd.read_csv(os.path.join(self.root, gtFileCSV))
         # The data is one row per target object.  So multiple rows per image.
@@ -65,8 +66,16 @@ class GeneralDetection(data.Dataset):
         # If it's greyscale, interpret as RGB.
         if image.ndim == 2:
             image = np.dstack([image, image, image])
-        # Get target data
-        target = self.filenameToArray[fn]
+        image = image.astype(float)
+        # Get target data.  Make our own copy to scale.
+        target = np.array(self.filenameToArray[fn])
+
+        H, W = image.shape[0], image.shape[1]
+        # Scale to [0,1]
+        target[:,0] /= float(W) #xmin
+        target[:,1] /= float(H) #ymin
+        target[:,2] /= float(W) #xmax
+        target[:,3] /= float(H) #ymax
 
         # Apply transform
         if self.transform is not None:
@@ -78,4 +87,10 @@ class GeneralDetection(data.Dataset):
         # The target to be returned is an array of dimension (nbObjects, 5)
         # Each object target (row) is [xmin ymin xmax ymax classIndex]
 
-        return torch.from_numpy(image).permute(2, 0, 1), target
+        im = torch.from_numpy(image).permute(2, 0, 1).to(torch.float)
+        gt = target
+        #gt = torch.from_numpy(target).to(torch.float)
+        #print('GENERAL getitem: im type, shape = {}, {}, gt type, dtype, shape = {}, {}, {}'.format(im.dtype, im.shape, type(gt), gt.dtype, gt.shape))
+
+        assert np.all(aiml.inRange(gt[:, :4], 0, 1))
+        return im, gt

@@ -1,5 +1,5 @@
 from data import *
-from utils.augmentations import SSDAugmentation
+from utils.augmentations import * #SSDAugmentation
 from layers.modules import MultiBoxLoss
 from ssd import build_ssd
 import os
@@ -13,10 +13,13 @@ import torch.backends.cudnn as cudnn
 import torch.nn.init as init
 import torch.utils.data as data
 from torchsummary import summary
+import torchvision
+from torchvision import transforms
 import numpy as np
 import argparse
 import collections
 import json
+import matplotlib.pyplot as plt
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
@@ -82,7 +85,36 @@ def readConfigFile(fn):
         cfg = json.load(f)
     return cfg
 
+
+
+def imshowTensor(inp, title=None, means=None):
+    """Imshow for Tensor."""
+    inp = inp.numpy().transpose((1, 2, 0))
+    if means is not None:
+        #print('adding means')
+        # Because at this point it's rgb
+        inp += means[::-1]
+    inp = np.clip(inp, 0, 255)
+    #print('inp type = {}, min={}, max={}'.format(inp.dtype, inp.min(), inp.max()))
+    plt.imshow(inp.astype(np.uint8))
+    if title is not None:
+        plt.title(title)
+    plt.pause(0.001)  # pause a bit so that plots are updated
+
+
+def showDataSet(trainLoader, means):
+    # inspired by https://pytorch.org/tutorials/beginner/transfer_learning_tutorial.html
+    class_names = trainLoader.dataset.classes
+    # Get a batch of training data
+    inputs, classes = next(iter(trainLoader))
+    # Make a grid from batch
+    out = torchvision.utils.make_grid(inputs)
+    imshowTensor(out, means=means)
+
+
 def train():
+    waysAndMeans = None
+
     if args.dataset == 'COCO':
         if args.dataset_root == VOC_ROOT:
             if not os.path.exists(COCO_ROOT):
@@ -91,31 +123,44 @@ def train():
                   "--dataset_root was not specified.")
             args.dataset_root = COCO_ROOT
         cfg = coco
+        waysAndMeans = MEANS
         dataset = COCODetection(root=args.dataset_root,
-                                transform=SSDAugmentation(cfg['min_dim'],
-                                                          MEANS))
+                                transform=SSDAugmentation(cfg['min_dim'], waysAndMeans))
     elif args.dataset == 'VOC':
         if args.dataset_root == COCO_ROOT:
             parser.error('Must specify dataset if specifying dataset_root')
         cfg = voc
+        waysAndMeans = MEANS
         dataset = VOCDetection(root=args.dataset_root,
-                               transform=SSDAugmentation(cfg['min_dim'],
-                                                         MEANS))
+                               transform=SSDAugmentation(cfg['min_dim'], waysAndMeans))
     elif args.dataset == 'general':
         if args.dataset_root == COCO_ROOT:
             parser.error('Must specify dataset if specifying dataset "general"')
         cfg = readConfigFile(args.configFile)
         print('Using general data set with config = \n{}'.format(cfg))
+        waysAndMeans = cfg['means']
+        transformer = SSDAugmentation(cfg['min_dim'], waysAndMeans, [
+            ConvertFromInts(),
+            #ToAbsoluteCoords(),
+            #PhotometricDistort(),
+            #Expand(self.mean),
+            #RandomSampleCrop(),
+            #RandomMirror(),
+            #ToPercentCoords(),
+            #Resize(self.size),
+            SubtractMeans(waysAndMeans)
+        ])
         dataset = GeneralDetection(args.dataset_root,
                                    args.classListFile,
                                    args.gtFileCSV,
-                                   transform=SSDAugmentation(cfg['min_dim'],
-                                                             cfg['means']),
+                                   transform=transformer,
                                    datasetName=args.dataName)
 
     if args.visdom:
         import visdom
         viz = visdom.Visdom()
+    else:
+        viz = None
 
     ssd_net = build_ssd('train', cfg['min_dim'], cfg['num_classes'])
     net = ssd_net
@@ -159,7 +204,7 @@ def train():
         net = net.cuda()
 
     print('Loaded model = ')
-    summary(ssd_net, (3, cfg['min_dim'], cfg['min_dim']))
+    summary(ssd_net, (3, cfg['min_dim'], cfg['min_dim']), device='cuda' if args.cuda else 'cpu')
 
     optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
                           weight_decay=args.weight_decay)
@@ -183,18 +228,23 @@ def train():
     if args.visdom:
         vis_title = 'SSD.PyTorch on ' + dataset.name
         vis_legend = ['Loc Loss', 'Conf Loss', 'Total Loss']
-        iter_plot = create_vis_plot('Iteration', 'Loss', vis_title, vis_legend)
-        epoch_plot = create_vis_plot('Epoch', 'Loss', vis_title, vis_legend)
+        iter_plot = create_vis_plot(viz, 'Iteration', 'Loss', vis_title, vis_legend)
+        epoch_plot = create_vis_plot(viz, 'Epoch', 'Loss', vis_title, vis_legend)
 
     data_loader = data.DataLoader(dataset, args.batch_size,
                                   num_workers=args.num_workers,
                                   shuffle=True, collate_fn=detection_collate,
                                   pin_memory=True)
+
+    plt.ion()
+    showDataSet(data_loader, means=waysAndMeans)
+    #plt.waitforbuttonpress()
+
     # create batch iterator
     batch_iterator = iter(data_loader)
     for iteration in range(args.start_iter, cfg['max_iter']):
         if args.visdom and iteration != 0 and (iteration % epoch_size == 0):
-            update_vis_plot(epoch, loc_loss, conf_loss, epoch_plot, None,
+            update_vis_plot(viz, epoch, loc_loss, conf_loss, epoch_plot, None,
                             'append', epoch_size)
             # reset epoch loss counters
             loc_loss = 0
@@ -220,11 +270,13 @@ def train():
         else:
             images = Variable(images)
             targets = [Variable(ann, volatile=True) for ann in targets]
+        #print('targets = {}'.format(targets))
         # forward
         t0 = time.time()
         out = net(images)
         # backprop
         optimizer.zero_grad()
+        #print('out  = \n{}, targets = \n{}'.format(out, targets))
         loss_l, loss_c = criterion(out, targets)
         loss = loss_l + loss_c
         loss.backward()
@@ -238,7 +290,7 @@ def train():
             print('iter ' + repr(iteration) + ' || Loss: %.4f ||' % (loss.item()), end=' ') # (loss.data[0]), end=' ')
 
         if args.visdom:
-            update_vis_plot(iteration, loss_l.item(), loss_c.item(), # loss_l.data[0], loss_c.data[0],
+            update_vis_plot(viz, iteration, loss_l.item(), loss_c.item(), # loss_l.data[0], loss_c.data[0],
                             iter_plot, epoch_plot, 'append')
 
         if iteration != 0 and iteration % 5000 == 0:
@@ -270,7 +322,7 @@ def weights_init(m):
         m.bias.data.zero_()
 
 
-def create_vis_plot(_xlabel, _ylabel, _title, _legend):
+def create_vis_plot(viz, _xlabel, _ylabel, _title, _legend):
     return viz.line(
         X=torch.zeros((1,)).cpu(),
         Y=torch.zeros((1, 3)).cpu(),
@@ -283,7 +335,7 @@ def create_vis_plot(_xlabel, _ylabel, _title, _legend):
     )
 
 
-def update_vis_plot(iteration, loc, conf, window1, window2, update_type,
+def update_vis_plot(viz, iteration, loc, conf, window1, window2, update_type,
                     epoch_size=1):
     viz.line(
         X=torch.ones((1, 3)).cpu() * iteration,
@@ -292,7 +344,7 @@ def update_vis_plot(iteration, loc, conf, window1, window2, update_type,
         update=update_type
     )
     # initialize epoch plot on first iteration
-    if iteration == 0:
+    if iteration == 0 and window2 is not None:
         viz.line(
             X=torch.zeros((1, 3)).cpu(),
             Y=torch.Tensor([loc, conf, loc + conf]).unsqueeze(0).cpu(),

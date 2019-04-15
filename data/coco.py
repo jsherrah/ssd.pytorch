@@ -94,6 +94,7 @@ class COCODetection(data.Dataset):
         self.transform = transform
         self.target_transform = target_transform
         self.name = dataset_name
+        self.classes = list(COCO_CLASSES)
 
     def __getitem__(self, index):
         """

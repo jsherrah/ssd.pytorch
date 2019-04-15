@@ -16,6 +16,7 @@ if sys.version_info[0] == 2:
     import xml.etree.cElementTree as ET
 else:
     import xml.etree.ElementTree as ET
+import matplotlib.pyplot as plt
 
 VOC_CLASSES = (  # always index 0
     'aeroplane', 'bicycle', 'bird', 'boat',
@@ -99,6 +100,7 @@ class VOCDetection(data.Dataset):
                  transform=None, target_transform=VOCAnnotationTransform(),
                  dataset_name='VOC0712'):
         self.root = root
+        self.classes = list(VOC_CLASSES)
         self.image_set = image_sets
         self.transform = transform
         self.target_transform = target_transform
@@ -113,7 +115,7 @@ class VOCDetection(data.Dataset):
 
     def __getitem__(self, index):
         im, gt, h, w = self.pull_item(index)
-
+        print('VOC getitem: im type, shape = {}, {}, type, gt type, shape = {}, {}, {}'.format(im.dtype, im.shape, type(gt), gt.dtype, gt.shape))
         return im, gt
 
     def __len__(self):
@@ -125,11 +127,14 @@ class VOCDetection(data.Dataset):
         target = ET.parse(self._annopath % img_id).getroot()
         img = cv2.imread(self._imgpath % img_id)
         height, width, channels = img.shape
+        #plt.imshow(img)
+        #plt.waitforbuttonpress()
 
         if self.target_transform is not None:
             target = self.target_transform(target, width, height)
 
         if self.transform is not None:
+            #print('transforming...')
             target = np.array(target)
             img, boxes, labels = self.transform(img, target[:, :4], target[:, 4])
             # to rgb

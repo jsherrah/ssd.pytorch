@@ -398,10 +398,11 @@ class PhotometricDistort(object):
 
 
 class SSDAugmentation(object):
-    def __init__(self, size=300, mean=(104, 117, 123)):
+    def __init__(self, size=300, mean=(104, 117, 123), txforms=None):
         self.mean = mean
         self.size = size
-        self.augment = Compose([
+        if txforms is None:
+            txforms = [
             ConvertFromInts(),
             ToAbsoluteCoords(),
             PhotometricDistort(),
@@ -411,7 +412,8 @@ class SSDAugmentation(object):
             ToPercentCoords(),
             Resize(self.size),
             SubtractMeans(self.mean)
-        ])
+        ]
+        self.augment = Compose(txforms)
 
     def __call__(self, img, boxes, labels):
         return self.augment(img, boxes, labels)
