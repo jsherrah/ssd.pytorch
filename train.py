@@ -28,40 +28,28 @@ def str2bool(v):
 parser = argparse.ArgumentParser(
     description='Single Shot MultiBox Detector Training With Pytorch')
 #train_set = parser.add_mutually_exclusive_group()
-parser.add_argument('--dataset', default='VOC', choices=['VOC', 'COCO', 'general'],
-                    type=str, help='VOC or COCO or general')
-parser.add_argument('--dataset_root', default=VOC_ROOT,
-                    help='Dataset root directory path')
-parser.add_argument('--batch_size', default=32, type=int,
-                    help='Batch size for training')
-parser.add_argument('--weightsFile', default=None, type=str,
-                    help='File to load weights from.')
-parser.add_argument('--loadMode', choices=['resume', 'finetune', 'basenet', 'none'], default='basenet', type=str,
-                    help='How to interpret weightsFile.\n\tfinetune: Finetune the given net, so all aspects might match, except for latter layers.\n\tbasenet: Pretrained base model for features.\n\tresume: weights must match exactly.')
-parser.add_argument('--start_iter', default=0, type=int,
-                    help='Resume training at this iter')
-parser.add_argument('--num_workers', default=4, type=int,
-                    help='Number of workers used in dataloading')
-parser.add_argument('--cuda', default=True, type=str2bool,
-                    help='Use CUDA to train model')
-parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
-                    help='initial learning rate')
-parser.add_argument('--momentum', default=0.9, type=float,
-                    help='Momentum value for optim')
-parser.add_argument('--weight_decay', default=5e-4, type=float,
-                    help='Weight decay for SGD')
-parser.add_argument('--gamma', default=0.1, type=float,
-                    help='Gamma update for SGD')
-parser.add_argument('--visdom', default=False, type=str2bool,
-                    help='Use visdom for loss visualization')
-parser.add_argument('--save_folder', default='weights/',
-                    help='Directory for saving checkpoint models')
+parser.add_argument('--dataset', default='VOC', choices=['VOC', 'COCO', 'general'], type=str, help='VOC or COCO or general')
+parser.add_argument('--dataset_root', default=VOC_ROOT, help='Dataset root directory path')
+parser.add_argument('--batch_size', default=32, type=int, help='Batch size for training')
+parser.add_argument('--weightsFile', default=None, type=str, help='File to load weights from.')
+parser.add_argument('--loadMode', choices=['resume', 'finetune', 'basenet', 'none'], default='basenet', type=str, help='How to interpret weightsFile.\n\tfinetune: Finetune the given net, so all aspects might match, except for latter layers.\n\tbasenet: Pretrained base model for features.\n\tresume: weights must match exactly.')
+parser.add_argument('--start_iter', default=0, type=int, help='Resume training at this iter')
+parser.add_argument('--num_workers', default=4, type=int, help='Number of workers used in dataloading')
+parser.add_argument('--cuda', default=True, type=str2bool, help='Use CUDA to train model')
+parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float, help='initial learning rate')
+parser.add_argument('--momentum', default=0.9, type=float, help='Momentum value for optim')
+parser.add_argument('--weight_decay', default=5e-4, type=float, help='Weight decay for SGD')
+parser.add_argument('--gamma', default=0.1, type=float, help='Gamma update for SGD')
+parser.add_argument('--visdom', default=False, type=str2bool, help='Use visdom for loss visualization')
+parser.add_argument('--save_folder', default='weights/', help='Directory for saving checkpoint models')
 parser.add_argument('--loadExtras', action='store_true', help='If true, load non-feature layers')
 
 parser.add_argument('--configFile', type=str, default=None, help='json config file for data set')
 parser.add_argument('--classListFile', type=str, default=None, help='file')
 parser.add_argument('--gtFileCSV', type=str, default=None, help='file')
 parser.add_argument('--dataName', type=str, default=None, help='file')
+parser.add_argument('--displayIters', default=10, type=int, help='Display every this many iterations')
+parser.add_argument('--saveIters', default=1000, type=int, help='Save every this many iterations')
 
 args = parser.parse_args()
 
@@ -156,6 +144,8 @@ def train():
                                    transform=transformer,
                                    datasetName=args.dataName)
 
+    imgSz = cfg['min_dim']
+
     if args.visdom:
         import visdom
         viz = visdom.Visdom()
@@ -222,7 +212,7 @@ def train():
     print('Training SSD on:', dataset.name)
     print('Using the specified args:')
     print(args)
-
+    print('%d iterations per epoch' % epoch_size)
     step_index = 0
 
     if args.visdom:
@@ -285,20 +275,24 @@ def train():
         loc_loss += loss_l.item() #data[0]
         conf_loss += loss_c.item() #data[0]
 
-        if iteration % 10 == 0:
+        if iteration % args.displayIters == 0:
             print('timer: %.4f sec.' % (t1 - t0))
             print('iter ' + repr(iteration) + ' || Loss: %.4f ||' % (loss.item()), end=' ') # (loss.data[0]), end=' ')
 
-        if args.visdom:
-            update_vis_plot(viz, iteration, loss_l.item(), loss_c.item(), # loss_l.data[0], loss_c.data[0],
-                            iter_plot, epoch_plot, 'append')
+            if args.visdom:
+                update_vis_plot(viz, iteration, loss_l.item(), loss_c.item(), # loss_l.data[0], loss_c.data[0],
+                                iter_plot, epoch_plot, 'append')
 
-        if iteration != 0 and iteration % 5000 == 0:
+        if iteration != 0 and iteration % args.saveIters == 0:
             print('Saving state, iter:', iteration)
-            torch.save(ssd_net.state_dict(), 'weights/ssd300_COCO_' +
-                       repr(iteration) + '.pth')
-    torch.save(ssd_net.state_dict(),
-               args.save_folder + '' + args.dataset + '.pth')
+            if args.dataName is None:
+                dataName = arts.dataset
+            else:
+                dataName = args.dataName
+            ofn = '%s/ssd%d_%s_%08d.pth' % (args.save_folder, imgSz, dataName, iteration)
+            torch.save(ssd_net.state_dict(), ofn)
+
+    torch.save(ssd_net.state_dict(), '%s/ssd%d_%s_%08d.pth' % (args.save_folder, imgSz, dataName, iteration))
 
 
 def adjust_learning_rate(optimizer, gamma, step):
