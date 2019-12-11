@@ -87,7 +87,10 @@ class MultiBoxLoss(nn.Module):
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
         loc_p = loc_data[pos_idx].view(-1, 4)
         loc_t = loc_t[pos_idx].view(-1, 4)
+        #print('loc_p = \n{}'.format(loc_p))
+        #print('loc_t = \n{}'.format(loc_t))
         loss_l = F.smooth_l1_loss(loc_p, loc_t, size_average=False)
+        assert torch.isfinite(loss_l)
 
         # Compute max conf across batch for hard negative mining
         batch_conf = conf_data.view(-1, self.num_classes)
@@ -126,6 +129,7 @@ class MultiBoxLoss(nn.Module):
 
         # replaced with this JRS
         N = num_pos.data.sum().double()
+        assert N > 0.0
         loss_l = loss_l.double()
         loss_c = loss_c.double()
 

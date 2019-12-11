@@ -172,10 +172,13 @@ def train():
                                             datasetName=args.dataName )
 
     imgSz = cfg['min_dim']
+    print('  - done')
 
     if args.visdom:
+        print('setting up visdom')
         import visdom
         viz = visdom.Visdom()
+        print('  - done')
     else:
         viz = None
 
@@ -263,6 +266,7 @@ def train():
                                           pin_memory=True)
         iter_plotTest = create_vis_plot(viz, 'Iteration', 'Loss',  'SSD.PyTorch on ' + dataset.name + ' - test', vis_legend)
         epoch_plotTest = create_vis_plot(viz, 'Epoch', 'Loss', 'SSD.PyTorch on ' + dataset.name + ' - test', vis_legend)
+        epoch_sizeTest = len(datasetTest) // args.batch_size
 
     plt.ion()
     showDataSet(data_loader, means=waysAndMeans)
@@ -290,7 +294,7 @@ def train():
             print('End of epoch %3d ||' % epoch, end=' ')
             if data_loaderTest is not None:
                 _, lossTest_l, lossTest_c = validate(
-                    data_loaderTest, net, criterion, args.cuda, None, epoch_size, doPrint=True
+                    data_loaderTest, net, criterion, args.cuda, None, epoch_sizeTest, doPrint=True
                 )
                 net.train()
             print('')
@@ -320,6 +324,7 @@ def train():
         optimizer.zero_grad()
         #print('out  = \n{}, targets = \n{}'.format(out, targets))
         loss_l, loss_c = criterion(out, targets)
+        #print('loss_l = {}, loss_c = {}'.format(loss_l, loss_c))
         loss = loss_l + loss_c
         loss.backward()
         optimizer.step()
